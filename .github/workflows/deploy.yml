@@ -1,0 +1,85 @@
+name: Build and Deploy Site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # For AWS OIDC
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout gardener-site (data)
+        uses: actions/checkout@v4
+        with:
+          path: gardener-site
+
+      - name: Checkout claude-code-the-gardener (code)
+        uses: actions/checkout@v4
+        with:
+          repository: mnbf9rca/claude-code-the-gardener
+          path: claude-code-the-gardener
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install Python dependencies
+        working-directory: claude-code-the-gardener/static_site_generator
+        run: uv sync
+
+      - name: Generate data files
+        working-directory: claude-code-the-gardener/static_site_generator
+        run: |
+          mkdir -p public/data
+          uv run python scripts/generate-data.py \
+            --data-dir ../../gardener-site/data \
+            --photos-dir ../../gardener-site/photos \
+            --output-dir ./public/data
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: claude-code-the-gardener/static_site_generator/package-lock.json
+
+      - name: Install Node dependencies
+        working-directory: claude-code-the-gardener/static_site_generator
+        run: npm ci
+
+      - name: Build Astro site
+        working-directory: claude-code-the-gardener/static_site_generator
+        run: npm run build
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Sync to S3
+        working-directory: claude-code-the-gardener/static_site_generator
+        env:
+          S3_BUCKET: plantscynexiacom
+        run: |
+          aws s3 sync dist/ "s3://${S3_BUCKET}/" \
+            --delete \
+            --cache-control "public, max-age=3600"
+
+      - name: Invalidate CloudFront cache
+        env:
+          DISTRIBUTION_ID: ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "$DISTRIBUTION_ID" \
+            --paths "/*"
