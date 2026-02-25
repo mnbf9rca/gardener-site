@@ -1,0 +1,6 @@
+{
+  "enabledMcpjsonServers": [
+    "plant-tools"
+  ],
+  "enableAllProjectMcpServers": true
+}
